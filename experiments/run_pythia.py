@@ -17,8 +17,8 @@ estimated law instead of the uniform one, which is the strongest selector of tha
 
 The two releases compose sequentially to ``eps``; everything after them is
 post-processing. The data-free rule spends nothing on step 1 and releases at the full
-budget. Hyperparameters are cross-validated on the seed-0 release of each selected
-mechanism, as in ``run_dpmc.py``.
+budget. Hyperparameters are cross-validated per seed on that seed's release, as in
+``run_dpmc.py``, and the same error and ranking metrics are reported.
 """
 import argparse
 import time
@@ -27,7 +27,7 @@ import numpy as np
 
 import _common
 from dpmc import channels as CH
-from dpmc.data import load_cached, grid_step, train_test_split, rmse, save
+from dpmc.data import load_cached, grid_step, train_test_split, rmse, ranking_metrics, save
 from dpmc.selection import stable_hash, score_table, pick, fit_eval
 
 
@@ -57,7 +57,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     _common.add_data_args(ap)
     _common.add_fit_args(ap)
-    ap.add_argument("--seeds", type=int, default=5)
+    ap.add_argument("--seeds", type=str, default="0-9")
     ap.add_argument("--eps_list", type=str, default=_common.EPS)
     ap.add_argument("--fracs", type=str, default="0.05,0.1,0.2",
                     help="fractions of the budget spent on the histogram")
@@ -75,51 +75,49 @@ def main():
     fracs = [float(x) for x in args.fracs.split(",")]
     ranks = [int(x) for x in args.ranks.split(",")]
     lams = sorted(float(x) for x in args.lams.split(","))
+    seeds = []
+    for part in args.seeds.split(","):
+        a, _, b = part.partition("-")
+        seeds.extend(range(int(a), int(b or a) + 1))
     payload = dict(meta=dict(dataset=args.dataset, shape=list(shape), n_obs_total=n_obs,
                              eps_list=eps_list, fracs=fracs, ranks=ranks, lams=lams,
-                             n_iter=args.n_iter, folds=args.folds, seeds=args.seeds,
+                             n_iter=args.n_iter, folds=args.folds, seeds=seeds,
                              candidates=list(CH.CANDIDATES), test_frac=args.test_frac),
                    select=[], records=[])
-    tr0, _ = train_test_split(n_obs, args.test_frac, 0)
-    r0, c0, v0 = rows[tr0], cols[tr0], vals[tr0]
-
     for eps in eps_list:
         rule = CH.select_mechanism(CH.CANDIDATES, grid, eps, r_min, r_max)
         for frac in fracs:
             eps_s, eps_r = frac * eps, (1.0 - frac) * eps
-            chosen = {}
-            for seed in range(args.seeds):
+            for seed in seeds:
                 tr, te = train_test_split(n_obs, args.test_frac, seed)
                 r_tr, c_tr, v_tr = rows[tr], cols[tr], vals[tr]
                 r_te, c_te, v_te = rows[te], cols[te], vals[te]
                 pi_hat = private_histogram(v_tr, grid, eps_s, selector_rng(seed, eps, frac))
                 mech = CH.select_mechanism(CH.CANDIDATES, grid, eps_r, r_min, r_max, pi=pi_hat)
                 alpha, V, s2, cc = CH.channel(mech, grid, eps_r, r_min, r_max)
-                if mech not in chosen:
-                    y0 = CH.sample(mech, v0, grid, eps_r, r_min, r_max,
-                                   release_rng_pythia(0, eps, frac, mech))
-                    x0 = (y0 - cc) / alpha
-                    S = score_table(r0, c0, x0, shape, ranks, lams, args.n_iter, clip, 0,
-                                    args.folds, log)
-                    chosen[mech] = pick(S, ranks, lams)
-                    payload["select"].append(dict(eps=eps, frac=frac, mech=mech,
-                                                  rank=int(chosen[mech][0]),
-                                                  lam=float(chosen[mech][1]),
-                                                  cv=[[float(z) for z in r] for r in S]))
-                rank, lam = chosen[mech]
                 y = CH.sample(mech, v_tr, grid, eps_r, r_min, r_max,
                               release_rng_pythia(seed, eps, frac, mech))
                 x = (y - cc) / alpha
                 t0 = time.time()
+                S = score_table(r_tr, c_tr, x, shape, ranks, lams, args.n_iter, clip, seed,
+                                args.folds, log)
+                rank, lam = pick(S, ranks, lams)
+                payload["select"].append(dict(eps=eps, frac=frac, seed=seed, mech=mech,
+                                              rank=int(rank), lam=float(lam),
+                                              cv=[[float(z) for z in r] for r in S]))
                 mdl = fit_eval(r_tr, c_tr, x, shape, rank, lam, args.n_iter, clip)
                 e = float(rmse(mdl["predict"](r_te, c_te), v_te))
+                score = (mdl["mu"] + mdl["bu"][:, None] + mdl["bi"][None, :]
+                         + mdl["P"] @ mdl["Q"].T)
+                rec, ndcg, _ = ranking_metrics(score, r_tr, c_tr, r_te, c_te, v_te)
                 payload["records"].append(dict(eps=eps, frac=frac, seed=seed, mech=mech,
                                                rule=rule, eps_select=eps_s, eps_release=eps_r,
                                                pi_hat=[float(p) for p in pi_hat], rmse=e,
+                                               recall=rec, ndcg=ndcg,
                                                rank=int(rank), lam=float(lam),
                                                secs=round(time.time() - t0, 1)))
-                log("[eps=%-5g f=%-4g seed=%d] selected=%-5s rule=%-5s rmse=%.4f"
-                    % (eps, frac, seed, mech, rule, e))
+                log("[eps=%-5g f=%-4g seed=%d] selected=%-5s rule=%-5s rmse=%.4f ndcg=%.4f"
+                    % (eps, frac, seed, mech, rule, e, ndcg))
                 save(args.out, payload)
     save(args.out, payload)
     log("[done] %s" % args.out)

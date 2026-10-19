@@ -10,9 +10,10 @@ EPS = "0.1,0.25,0.5,1,2,4,8"
 
 def add_data_args(ap):
     """Arguments that locate and shape the evaluation block."""
-    ap.add_argument("--dataset", choices=["ml-25m", "amazon"], default="ml-25m")
+    ap.add_argument("--dataset", choices=["ml-25m", "ml-25m-rand", "amazon", "goodreads"],
+                    default="ml-25m")
     ap.add_argument("--data_dir", required=True,
-                    help="directory holding ml-25m/ratings.csv or Video_Games.csv")
+                    help="directory holding the raw ratings file of the dataset")
     ap.add_argument("--cache_dir", default=None,
                     help="directory for cached blocks (default: data_dir)")
     ap.add_argument("--m", type=int, default=2000, help="number of most active users kept")
