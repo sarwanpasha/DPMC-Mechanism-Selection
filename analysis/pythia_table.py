@@ -30,7 +30,7 @@ def main():
             for r in d["records"]:
                 rows.append((ds, round(r["eps"], 4), round(r["frac"], 4), r["seed"], r["mech"], r["rmse"]))
     summary = {}
-    for ds in ("ml-25m", "amazon"):
+    for ds in C.datasets_in(recs):
         for f in sorted({r[2] for r in rows}):
             for e in C.EPS:
                 sel = sorted([r for r in rows if r[0] == ds and r[2] == f and abs(r[1] - e) < 1e-9],

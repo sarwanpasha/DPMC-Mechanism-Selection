@@ -23,8 +23,8 @@ def main():
     ap.add_argument("--nuclear", nargs="*", default=[])
     args = ap.parse_args()
     recs = C.load(args.runs)
-    raw = C.load(args.nodebias)
-    for ds in ("ml-25m", "amazon"):
+    raw = C.load(args.nodebias, debias=0)
+    for ds in C.datasets_in(recs):
         print("== %s ==" % C.DATASETS[ds][0])
         for e in C.EPS:
             a = C.per_seed(raw, ds, "krr", e)[0]

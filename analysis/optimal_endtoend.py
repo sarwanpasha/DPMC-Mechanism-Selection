@@ -19,7 +19,7 @@ def main():
     for new in ("lpopt", "rrbins"):
         ties = ahead = behind = 0
         worst_ahead = worst_behind = 0.0
-        for ds in ("ml-25m", "amazon"):
+        for ds in C.datasets_in(recs):
             for e in C.EPS:
                 r = C.rule(ds, e)
                 a, _ = C.per_seed(recs, ds, new, e)
