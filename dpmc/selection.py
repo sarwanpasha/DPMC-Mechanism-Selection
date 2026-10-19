@@ -5,9 +5,10 @@ integers, so a run is a deterministic function of its arguments. The mechanism n
 enters through a SHA-256 hash because Python's built-in ``hash`` of a string changes
 between processes.
 
-Hyperparameters ``(rank, lam)`` are chosen by K-fold cross-validation against the
-debiased privatized values of the seed-0 release, independently at each budget. Neither
-the selection nor the fit reads a true rating, so both are post-processing of the release.
+Hyperparameters ``(rank, lam)`` are chosen for every seed by K-fold cross-validation
+against the debiased privatized training values of that seed's own release,
+independently at each budget. Neither the selection nor the fit reads a true rating, so
+both are post-processing of the release.
 """
 import hashlib
 import time
@@ -24,8 +25,15 @@ def stable_hash(s):
 
 
 def release_rng(seed, eps, mech):
-    """Generator for the privatization draw of ``(seed, eps, mech)``."""
-    return np.random.default_rng([seed, int(round(eps * 1000)), abs(stable_hash(mech)) % 1000])
+    """Generator for the privatization draw of ``(seed, eps, mech)``.
+
+    The mechanism is first mapped to the one whose release it reproduces
+    (``channels.canonical``), so the hybrid below its switching budget draws exactly the
+    one-bit release.
+    """
+    from .channels import canonical
+    key = canonical(mech, eps)
+    return np.random.default_rng([seed, int(round(eps * 1000)), abs(stable_hash(key)) % 1000])
 
 
 def fit_eval(r_tr, c_tr, x_tr, shape, rank, lam, n_iter, clip):

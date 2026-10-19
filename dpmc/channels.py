@@ -23,6 +23,8 @@ Mechanism names used throughout the code base:
     hm       hybrid of one-bit and piecewise, Wang et al.
     expo     exponential mechanism with squared-error utility, calibrated exactly
     stair    staircase mechanism retuned for squared error (dpmc.staircase)
+    sw       Square Wave mechanism of Li et al. (exactly affine conditional mean)
+    huber    clipped additive noise with Huber-loss density, width tuned data-free
     lpopt    LP-optimal unbiased channel (dpmc.optimal)
     rrbins   randomized response on bins (dpmc.optimal)
 
@@ -35,8 +37,20 @@ from .staircase import stair_stats, stair_sample
 CANDIDATES = ("krr", "geom", "laplace", "shin", "pm")
 """The short list Q over which the selection rule minimizes effective noise."""
 
-ALL_MECHANISMS = ("krr", "geom", "laplace", "shin", "expo", "pm", "hm", "stair",
-                  "lpopt", "rrbins")
+ALL_MECHANISMS = ("krr", "geom", "laplace", "shin", "expo", "pm", "hm", "stair", "sw",
+                  "huber", "lpopt", "rrbins")
+
+
+def canonical(mech, eps):
+    """The mechanism whose release ``mech`` reproduces exactly at budget ``eps``.
+
+    Below the switching budget the hybrid uses only its one-bit branch, so it is the
+    one-bit randomizer; it is then run, seeded and reported as such, which makes the two
+    releases identical draw for draw.
+    """
+    if mech == "hm" and hm_alpha(eps) == 0.0:
+        return "shin"
+    return mech
 
 
 def krr_matrix(k, eps):
@@ -182,6 +196,10 @@ def channel(mech, grid, eps, lo, hi, pi=None):
         return hm_stats(grid, eps, lo, hi, pi)
     if mech == "stair":
         return stair_stats(grid, eps, lo, hi, pi)
+    if mech == "sw":
+        return sw_stats(grid, eps, lo, hi, pi)
+    if mech == "huber":
+        return huber_stats(grid, eps, lo, hi, pi)
     raise ValueError(mech)
 
 
@@ -205,6 +223,10 @@ def sample(mech, vals, grid, eps, lo, hi, rng):
         return pm_sample(vals, eps, lo, hi, rng)
     if mech == "hm":
         return hm_sample(vals, eps, lo, hi, rng)
+    if mech == "sw":
+        return sw_sample(vals, eps, lo, hi, rng)
+    if mech == "huber":
+        return huber_sample(vals, eps, lo, hi, rng, huber_best_width(k, eps, lo, hi))
     if mech == "stair":
         return stair_sample(vals, grid, eps, lo, hi, rng)
     idx = np.abs(vals[:, None] - grid[None, :]).argmin(axis=1)
@@ -241,6 +263,12 @@ def conditional_variance(mech, grid, eps, lo, hi):
         bias = 0.5 * b * (np.exp(-u / b) - np.exp(-w / b))
         m2c = 2 * b ** 2 - b * (u + b) * np.exp(-u / b) - b * (w + b) * np.exp(-w / b)
         v = m2c - bias ** 2
+    elif mech == "sw":
+        v = D ** 2 * sw_var_unit((grid - lo) / D, eps)
+    elif mech == "huber":
+        a = huber_best_width(k, eps, lo, hi)
+        m = np.array([huber_moments(g, eps, lo, hi, a) for g in grid])
+        v = m[:, 1] - m[:, 0] ** 2
     elif mech in ("krr", "geom", "expo"):
         P = (krr_matrix(k, eps) if mech == "krr" else
              expo_matrix(grid, eps) if mech == "expo" else geometric_matrix(k, eps))
@@ -336,6 +364,8 @@ def hm_sample(vals, eps, lo, hi, rng):
     D = hi - lo
     t = 2.0 * (vals - lo) / D - 1.0
     a = hm_alpha(eps)
+    if a == 0.0:
+        return shin_sample(vals, eps, lo, hi, rng)
     use_pm = rng.random(t.shape) < a
     out_pm = pm_sample_t(t, eps, rng)
     Cd = (np.exp(eps) + 1.0) / (np.exp(eps) - 1.0)
@@ -347,3 +377,160 @@ def hm_sample(vals, eps, lo, hi, rng):
 def grid_for(lo, hi, step):
     """The public rating grid ``lo, lo + step, ..., hi``."""
     return np.arange(lo, hi + step / 2.0, step)
+
+
+def sw_params(eps):
+    """Window half-width ``b`` and the two density levels ``(p, q)`` of Square Wave on [0, 1]."""
+    e = np.exp(eps)
+    b = (eps * e - e + 1.0) / (2.0 * e * (e - 1.0 - eps))
+    p = e / (2.0 * b * e + 1.0)
+    q = 1.0 / (2.0 * b * e + 1.0)
+    return b, p, q
+
+
+def sw_moments_unit(v, eps):
+    """First two moments of the Square Wave report for input ``v`` in [0, 1].
+
+    The report has density ``p`` on ``[v - b, v + b]`` and ``q`` elsewhere on
+    ``[-b, 1 + b]``, with ``p / q = e^eps``; its mean is ``q (1 + 2b) / 2 + 2b (p - q) v``,
+    exactly affine in ``v``.
+    """
+    b, p, q = sw_params(eps)
+    m1 = q * (1.0 + 2.0 * b) / 2.0 + (p - q) * 2.0 * b * v
+    m2 = q * ((1.0 + b) ** 3 + b ** 3) / 3.0 + (p - q) * (2.0 * b * v ** 2 + 2.0 * b ** 3 / 3.0)
+    return m1, m2
+
+
+def sw_var_unit(v, eps):
+    """Conditional variance of the Square Wave report on the unit scale."""
+    m1, m2 = sw_moments_unit(v, eps)
+    return m2 - m1 ** 2
+
+
+def sw_stats(grid, eps, lo, hi, pi=None):
+    """Exact statistics of Square Wave on the rating scale, ``Y = lo + Delta * report``."""
+    k = len(grid)
+    pi = np.full(k, 1.0 / k) if pi is None else np.asarray(pi, float) / np.sum(pi)
+    D = hi - lo
+    v = (grid - lo) / D
+    m1, m2 = sw_moments_unit(v, eps)
+    return _stats(lo + D * m1, D ** 2 * (m2 - m1 ** 2), grid, pi)
+
+
+def sw_sample(vals, eps, lo, hi, rng):
+    """Sample Square Wave: a uniform draw on the window with probability ``2b (p - q)``,
+    otherwise uniform on the whole output range ``[-b, 1 + b]``."""
+    D = hi - lo
+    v = (vals - lo) / D
+    b, p, q = sw_params(eps)
+    in_win = rng.random(v.shape) < 2.0 * b * (p - q)
+    u = rng.random(v.shape)
+    out = np.where(in_win, v - b + 2.0 * b * u, -b + (1.0 + 2.0 * b) * u)
+    return lo + D * out
+
+
+def _phi(x):
+    """Standard normal distribution function."""
+    from math import erf, sqrt
+    return 0.5 * (1.0 + erf(x / sqrt(2.0)))
+
+
+def _huber_parts(eps, D, a):
+    """Rate ``beta``, central mass, mass of each tail and total mass of the Huber density.
+
+    The noise density is proportional to ``exp(-beta H_a(z))`` with ``beta = eps / Delta``
+    and ``H_a(z) = z^2 / (2a)`` for ``|z| <= a``, ``|z| - a/2`` otherwise. ``H_a`` is
+    1-Lipschitz, so a shift of the input by at most ``Delta`` changes the log-density by
+    at most ``eps``: the mechanism is eps-DP, and ``a = 0`` is the Laplace mechanism.
+    """
+    from math import sqrt, pi, exp
+    beta = eps / D
+    if a > 0.0:
+        s = sqrt(a / beta)
+        mc = sqrt(2.0 * pi) * s * (_phi(sqrt(a * beta)) - _phi(-sqrt(a * beta)))
+    else:
+        mc = 0.0
+    mt = exp(-beta * a / 2.0) / beta
+    return beta, mc, mt, mc + 2.0 * mt
+
+
+def huber_cdf(z, eps, D, a):
+    """Distribution function of Huber noise at the scalar ``z``."""
+    from math import sqrt, exp
+    beta, mc, mt, M = _huber_parts(eps, D, a)
+    if z <= -a:
+        return exp(-beta * (-z - a / 2.0)) / beta / M
+    if z >= a:
+        return 1.0 - exp(-beta * (z - a / 2.0)) / beta / M
+    s = sqrt(a / beta)
+    return (mt + sqrt(2.0 * 3.141592653589793) * s * (_phi(z / s) - _phi(-sqrt(a * beta)))) / M
+
+
+def huber_moments(x, eps, lo, hi, a, n=4001):
+    """First two moments of ``clip(x + Z, lo, hi)`` for Huber noise ``Z`` of width ``a``."""
+    D = hi - lo
+    beta, mc, mt, M = _huber_parts(eps, D, a)
+    zl, zh = lo - x, hi - x
+    pl = huber_cdf(zl, eps, D, a)
+    ph = 1.0 - huber_cdf(zh, eps, D, a)
+    z = np.linspace(zl, zh, n)
+    w = np.full(n, (zh - zl) / (n - 1.0))
+    w[0] *= 0.5
+    w[-1] *= 0.5
+    az = np.abs(z)
+    core = np.exp(-beta * z * z / (2.0 * a)) if a > 0.0 else np.zeros_like(z)
+    dens = np.where(az <= a, core, np.exp(-beta * (az - a / 2.0))) / M
+    f = dens * w
+    y = x + z
+    return lo * pl + hi * ph + float(np.sum(f * y)), lo * lo * pl + hi * hi * ph + float(np.sum(f * y * y))
+
+
+HUBER_WIDTHS = (0.0, 0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0)
+"""Huber widths tried, in units of ``Delta``; the width is tuned from the grid alone."""
+
+
+def _huber_stats_at(grid, eps, lo, hi, a, pi):
+    m = np.array([huber_moments(g, eps, lo, hi, a) for g in grid])
+    return _stats(m[:, 0], m[:, 1] - m[:, 0] ** 2, grid, pi)
+
+
+def huber_best_width(k, eps, lo, hi):
+    """Width minimizing uniform-law effective noise; reads only the grid and the budget."""
+    grid = np.linspace(lo, hi, k)
+    pi = np.full(k, 1.0 / k)
+    D = hi - lo
+    return min((r * D for r in HUBER_WIDTHS),
+               key=lambda a: _huber_stats_at(grid, eps, lo, hi, a, pi)[2])
+
+
+def huber_stats(grid, eps, lo, hi, pi=None, a=None):
+    """Statistics of the clipped Huber mechanism at the tuned (or a given) width."""
+    k = len(grid)
+    pi = np.full(k, 1.0 / k) if pi is None else np.asarray(pi, float) / np.sum(pi)
+    if a is None:
+        a = huber_best_width(k, eps, lo, hi)
+    return _huber_stats_at(grid, eps, lo, hi, a, pi)
+
+
+def huber_sample(vals, eps, lo, hi, rng, a):
+    """Sample the clipped Huber mechanism of width ``a``: a central truncated normal with
+    probability equal to its mass, otherwise ``a`` plus an exponential tail."""
+    D = hi - lo
+    beta, mc, mt, M = _huber_parts(eps, D, a)
+    n = vals.shape[0]
+    u = rng.random(n)
+    z = np.empty(n)
+    central = u < mc / M
+    nc = int(central.sum())
+    if nc:
+        s = np.sqrt(a / beta)
+        draw = rng.standard_normal(nc) * s
+        bad = np.abs(draw) > a
+        while bad.any():
+            draw[bad] = rng.standard_normal(int(bad.sum())) * s
+            bad = np.abs(draw) > a
+        z[central] = draw
+    nt = n - nc
+    sign = np.where(rng.random(nt) < 0.5, -1.0, 1.0)
+    z[~central] = sign * (a + rng.exponential(1.0 / beta, nt))
+    return np.clip(vals + z, lo, hi)
