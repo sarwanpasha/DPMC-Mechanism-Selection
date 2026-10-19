@@ -1,8 +1,6 @@
 # Mechanism Selection for Private Matrix Completion
 
-Code for the paper *Mechanism Selection for Private Matrix Completion* by
-Sarwan Ali (Columbia University Irving Medical Center) and Imdadullah Khan (Islamic
-University of Madinah; Lahore University of Management Sciences).
+Code for the paper *Mechanism Selection for Private Matrix Completion*
 
 Differentially private matrix completion by input perturbation privatizes every observed
 rating once with an entrywise mechanism and then reconstructs the matrix from the release.
