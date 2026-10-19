@@ -50,14 +50,14 @@ def main():
                 within.append(spearman([cells[(m, e)][1] for m in ms], [cells[(m, e)][0] for m in ms]))
         avg_rank = {}
         for e in C.EPS:
-            ms = [m for m in PAIR_MECHS if (m, e) in cells]
+            ms = [m for m in PAIR_MECHS if (m, e) in cells and CH.canonical(m, e) == m]
             order = sorted(ms, key=lambda m: cells[(m, e)][0])
             for r, m in enumerate(order):
                 avg_rank.setdefault(m, []).append(r)
         fixed = {m: float(np.mean(v)) for m, v in avg_rank.items()}
         agree = agree_fixed = tot = 0
         for e in C.EPS:
-            ms = [m for m in PAIR_MECHS if (m, e) in cells]
+            ms = [m for m in PAIR_MECHS if (m, e) in cells and CH.canonical(m, e) == m]
             for i in range(len(ms)):
                 for j in range(i + 1, len(ms)):
                     r1, s1 = cells[(ms[i], e)]

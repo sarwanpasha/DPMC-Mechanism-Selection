@@ -23,7 +23,7 @@ def main():
     recs = C.load(args.runs)
     rows = []
     for p in args.pythia:
-        files = sorted(glob.glob(os.path.join(p, "*.json"))) if os.path.isdir(p) else [p]
+        files = sorted(glob.glob(os.path.join(p, "**", "*.json"), recursive=True)) if os.path.isdir(p) else [p]
         for f in files:
             d = json.load(open(f))
             ds = d["meta"]["dataset"]

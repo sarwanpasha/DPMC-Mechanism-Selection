@@ -1,10 +1,11 @@
 """Every data-free number in the paper: effective noise, crossovers, reference-law analyses.
 
-Prints the effective-noise table of the seven candidates on both grids (smallest per
+Prints the effective-noise table of every affine-mean mechanism on both grids (smallest per
 budget marked), the two crossover budgets as functions of ``k`` with the scale-invariance
 check, the range of the second crossover over the exponential-tilt family, the law-free
-boundaries, and the number of budgets at which the rule's choice beats five of its six
-rivals under every law.
+boundaries, and the number of budgets at which the rule's choice beats all of its rivals
+but at most one under every law (Huber, numerically the Laplace mechanism, and the hybrid
+where it coincides with the one-bit randomizer are not counted as rivals).
 """
 import numpy as np
 
@@ -37,10 +38,11 @@ def main():
         count = 0
         for e in C.EPS:
             r = C.rule(ds, e)
-            beaten = sum(CF.law_free(r, m, g, e, lo, hi) for m in C.TABLE_MECHS if m != r)
-            count += beaten >= 5
-            print("  eps=%-5g rule=%-6s beats %d of 6 rivals under every law" % (e, C.NAMES[r], beaten))
-        print("budgets at which the rule's choice beats at least five of six rivals law-free: %d of 7" % count)
+            rivals = [m for m in C.TABLE_MECHS if m not in (r, "huber") and CH.canonical(m, e) != r]
+            beaten = sum(CF.law_free(r, m, g, e, lo, hi) for m in rivals)
+            count += beaten >= len(rivals) - 1
+            print("  eps=%-5g rule=%-6s beats %d of %d rivals under every law" % (e, C.NAMES[r], beaten, len(rivals)))
+        print("budgets at which the rule's choice beats all rivals but at most one law-free: %d of 7" % count)
         print()
     print("== crossovers versus k (Delta=4.5; Delta=10 gives identical values) ==")
     for k in (3, 4, 5, 6, 7, 8, 10, 12, 15, 20):
