@@ -48,9 +48,19 @@ for ds in ml-25m ml-25m-rand amazon goodreads; do
     fi
   done; done
 done
+mkdir -p results/diag/goodreads results/leverage
+for ds in ml-25m ml-25m-rand amazon goodreads; do
+  D=$(dir_of $ds)
+  [ -s results/baselines/reference_${ds}.json ] || echo "python3 experiments/run_reference.py --dataset $ds --data_dir $D --out results/baselines/reference_${ds}.json > results/logs/reference_${ds}.log 2>&1" >> results/jobs_stage1.txt
+  [ -s results/leverage/${ds}.json ] || echo "python3 experiments/run_leverage.py --dataset $ds --data_dir $D --out results/leverage/${ds}.json > results/logs/leverage_${ds}.log 2>&1" >> results/jobs_stage1.txt
+done
+# the one-bit release on Goodreads at eps = 1 refitted at the ridge weight chosen for the other mechanisms
+for s in 0 1 2 3 4 5 6 7 8 9; do
+  out=results/diag/goodreads/shin_e1_s${s}.json
+  [ -s "$out" ] || echo "python3 experiments/run_dpmc.py --dataset goodreads --data_dir $GR --mech shin --eps_list 1 --seeds $s --lams 300 --out $out > results/logs/diag_goodreads_shin_s${s}.log 2>&1" >> results/jobs_stage1.txt
+done
 for ds in ml-25m amazon; do
   tag=$([ $ds = ml-25m ] && echo ml || echo am); D=$(dir_of $ds)
-  [ -s results/baselines/reference_${tag}.json ] || echo "python3 experiments/run_reference.py --dataset $ds --data_dir $D --out results/baselines/reference_${tag}.json > results/logs/reference_${tag}.log 2>&1" >> results/jobs_stage1.txt
   [ -s results/baselines/dpsgd_${tag}.json ] || echo "python3 experiments/run_dpsgd.py --dataset $ds --data_dir $D --noise gauss --out results/baselines/dpsgd_${tag}.json > results/logs/dpsgd_${tag}.log 2>&1" >> results/jobs_stage1.txt
   [ -s results/baselines/dpgd_${tag}.json ] || echo "python3 experiments/run_dpsgd.py --dataset $ds --data_dir $D --noise laplace_pure --out results/baselines/dpgd_${tag}.json > results/logs/dpgd_${tag}.log 2>&1" >> results/jobs_stage1.txt
 done
@@ -109,5 +119,7 @@ python3 timing_table.py ../results/timing.json              > ../results/table_t
 python3 ablation_table.py --runs ../results/grid --nodebias ../results/nodebias \
         --nuclear ../results/baselines/nuclear_*.json      > ../results/table_ablation.txt
 python3 synthetic_table.py ../results/baselines/synthetic_k*.json > ../results/table_synthetic.txt
+python3 main_table.py --runs ../results/diag                  > ../results/table_goodreads_fixed_ridge.txt
+python3 -c "import glob, json; [print(json.load(open(f))['meta'], json.load(open(f))['records']) for f in sorted(glob.glob('../results/leverage/*.json'))]" > ../results/table_leverage.txt
 python3 make_figure.py --runs ../results/grid --out ../results/mechanism_crossover.pdf
 echo "all tables written to results/"
