@@ -1,8 +1,11 @@
 """Non-private reference ceiling and simple baselines on the same blocks and splits.
 
-Phase A selects ``(rank, reg)`` of the biased factorization on a validation split of seed
-0; phase B refits the winner for every seed and scores it on the test split, together with
-the global-mean predictor and the additive bias-only model.
+The test split of every seed is the one ``run_dpmc.py`` uses. Phase A selects
+``(rank, reg)`` of the biased factorization on a validation share of the seed-0 training
+ratings (true values, so this row is a non-private ceiling); phase B refits the winner on
+each seed's full training ratings and scores it on that seed's test split, together with
+the global-mean predictor and the additive bias-only model. Recall@10 and NDCG@10 are
+reported for the factorization as in ``run_dpmc.py``.
 """
 import argparse
 import time
@@ -10,16 +13,16 @@ import time
 import numpy as np
 
 import _common
-from dpmc.data import load_cached, three_way_split, rmse, save
+from dpmc.data import load_cached, train_test_split, rmse, ranking_metrics, save
 from dpmc.mf import fit_biased_mf, fit_bias_only
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     _common.add_data_args(ap)
-    ap.add_argument("--seeds", type=int, default=5)
+    ap.add_argument("--seeds", type=int, default=10)
     ap.add_argument("--val_frac", type=float, default=0.10)
-    ap.add_argument("--ranks", type=str, default="8,16,32")
+    ap.add_argument("--ranks", type=str, default="8,16,32,64")
     ap.add_argument("--regs", type=str, default="3,10,30")
     ap.add_argument("--n_iter", type=int, default=15)
     ap.add_argument("--out", required=True)
@@ -37,7 +40,9 @@ def main():
                              n_iter=args.n_iter, val_frac=args.val_frac,
                              test_frac=args.test_frac, seeds=args.seeds),
                    grid=[], records=[], runs=[])
-    tr, va, _ = three_way_split(n_obs, args.val_frac, args.test_frac, 0)
+    tr0, _ = train_test_split(n_obs, args.test_frac, 0)
+    cut = int(round(args.val_frac * tr0.size))
+    va, tr = tr0[:cut], tr0[cut:]
     best = None
     for rk in ranks:
         for rg in regs:
@@ -52,7 +57,7 @@ def main():
     v_best, rk_best, rg_best = best
     payload["meta"]["selected"] = dict(rank=rk_best, reg=rg_best, val_rmse=v_best)
     for seed in range(args.seeds):
-        tr, va, te = three_way_split(n_obs, args.val_frac, args.test_frac, seed)
+        tr, te = train_test_split(n_obs, args.test_frac, seed)
         R, C, V = rows[tr], cols[tr], vals[tr]
         tr_, tc, tv = rows[te], cols[te], vals[te]
         mu = float(V.mean())
@@ -63,8 +68,10 @@ def main():
                                        rmse=float(rmse(bo["predict"](tr_, tc), tv))))
         mdl = fit_biased_mf(R, C, V, shape, rank=rk_best, reg=rg_best, n_iter=args.n_iter, clip=clip)
         t_e = float(rmse(mdl["predict"](tr_, tc), tv))
+        score = mdl["mu"] + mdl["bu"][:, None] + mdl["bi"][None, :] + mdl["P"] @ mdl["Q"].T
+        rec, ndcg, _ = ranking_metrics(score, R, C, tr_, tc, tv)
         payload["records"].append(dict(method="NonPrivate-BiasedMF", seed=seed, rmse=t_e,
-                                       rank=rk_best, reg=rg_best))
+                                       recall=rec, ndcg=ndcg, rank=rk_best, reg=rg_best))
         log("[B seed=%d] test=%.4f" % (seed, t_e))
     agg = {}
     for rec in payload["records"]:
